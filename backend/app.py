@@ -33,9 +33,10 @@ def load_excel():
                     if text:
                         row_values.append(text)
 
-                        # First meaningful column often carries month/year group
-                        if idx == 0 and re.search(r"(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[,\s-]*20\d{2}", text.lower()):
-                            current_month_year = text
+                        if idx == 0:
+                            month_year_pattern = r"(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[,\s-]*20\d{2}"
+                            if re.search(month_year_pattern, text.lower()):
+                                current_month_year = text
 
                 if cell.hyperlink and cell.hyperlink.target:
                     row_links.append(cell.hyperlink.target)
@@ -119,7 +120,20 @@ def format_results(items, limit=None):
     return "\n\n".join(output)
 
 
-def search_answer(question):
+def unique_items_only(items):
+    unique = []
+    seen = set()
+
+    for item in items:
+        key = item["text"] + "||" + "||".join(item.get("links", []))
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    return unique
+
+
+def search_answer(question, selected_sheet):
     q = question.lower().strip()
     month, year, month_map = normalize_month_query(q)
 
@@ -133,26 +147,30 @@ def search_answer(question):
 
     keywords = [word.strip() for word in cleaned_query.split() if word.strip()]
 
+    filtered_knowledge = [
+        item for item in knowledge
+        if item["sheet"].strip().lower() == selected_sheet.strip().lower()
+    ]
+
     month_year_matches = []
     keyword_matches = []
     fallback_matches = []
 
-    for item in knowledge:
+    for item in filtered_knowledge:
         text_lower = item["text"].lower()
         group_lower = item.get("group", "").lower()
 
-        # MODE 1: exact month + year group match
+        # Mode 1: month + year exact match
         if month and year:
             if month in group_lower and year in group_lower:
                 month_year_matches.append(item)
                 continue
 
-            # fallback to text if group not captured well
             if month in text_lower and year in text_lower:
                 month_year_matches.append(item)
                 continue
 
-        # MODE 2: keyword-specific search
+        # Mode 2: specific keyword search
         keyword_score = 0
         for word in keywords:
             if word in text_lower:
@@ -162,7 +180,7 @@ def search_answer(question):
             keyword_matches.append((keyword_score, item))
             continue
 
-        # MODE 3: generic fallback search
+        # Mode 3: generic fallback
         fallback_score = 0
         for word in q.split():
             if word in text_lower:
@@ -171,61 +189,38 @@ def search_answer(question):
         if fallback_score > 0:
             fallback_matches.append((fallback_score, item))
 
-    # Return ALL rows for month + year
     if month and year and month_year_matches:
-        unique_items = []
-        seen = set()
+        month_year_matches = unique_items_only(month_year_matches)
+        return format_results(month_year_matches, limit=None)
 
-        for item in month_year_matches:
-            key = item["text"] + "||" + "||".join(item.get("links", []))
-            if key not in seen:
-                seen.add(key)
-                unique_items.append(item)
-
-        return format_results(unique_items, limit=None)
-
-    # Return related keyword rows, up to 20
     if keyword_matches:
         keyword_matches.sort(key=lambda x: x[0], reverse=True)
+        items = [item for _, item in keyword_matches]
+        items = unique_items_only(items)
+        return format_results(items, limit=20)
 
-        unique_items = []
-        seen = set()
-
-        for _, item in keyword_matches:
-            key = item["text"] + "||" + "||".join(item.get("links", []))
-            if key not in seen:
-                seen.add(key)
-                unique_items.append(item)
-
-        return format_results(unique_items, limit=20)
-
-    # Generic fallback = top 5
     if fallback_matches:
         fallback_matches.sort(key=lambda x: x[0], reverse=True)
+        items = [item for _, item in fallback_matches]
+        items = unique_items_only(items)
+        return format_results(items, limit=5)
 
-        unique_items = []
-        seen = set()
-
-        for _, item in fallback_matches:
-            key = item["text"] + "||" + "||".join(item.get("links", []))
-            if key not in seen:
-                seen.add(key)
-                unique_items.append(item)
-
-        return format_results(unique_items, limit=5)
-
-    return "No relevant data found."
+    return f"No relevant data found in sheet '{selected_sheet}'."
 
 
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json(silent=True) or {}
     question = data.get("question", "").strip()
+    selected_sheet = data.get("sheet", "").strip()
 
     if not question:
         return jsonify({"answer": "Please enter a question."})
 
-    answer = search_answer(question)
+    if not selected_sheet:
+        return jsonify({"answer": "Please select a sheet."})
+
+    answer = search_answer(question, selected_sheet)
     return jsonify({"answer": answer})
 
 
