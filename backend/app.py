@@ -40,7 +40,6 @@ def normalize_month_and_year(text):
     }
 
     parts = text.split()
-
     detected_month = None
     detected_year = None
 
@@ -78,16 +77,23 @@ def load_excel():
         current_group_year = None
 
         for row in sheet.iter_rows():
-            a_cell = row[0]
 
-            # carry forward month bucket from column A
-            if a_cell.value is not None:
-                col_a_text = normalize_spaces(a_cell.value)
+            # ✅ FIX: detect month bucket in column A OR B
+            for cell in row[:2]:
+                if cell.value is None:
+                    continue
 
-                if looks_like_month_group(col_a_text):
-                    current_group_text = col_a_text
-                    current_group_link = a_cell.hyperlink.target if a_cell.hyperlink and a_cell.hyperlink.target else None
-                    current_group_month, current_group_year = normalize_month_and_year(col_a_text)
+                cell_text = normalize_spaces(cell.value)
+
+                if looks_like_month_group(cell_text):
+                    current_group_text = cell_text
+                    current_group_link = (
+                        cell.hyperlink.target
+                        if cell.hyperlink and cell.hyperlink.target
+                        else None
+                    )
+                    current_group_month, current_group_year = normalize_month_and_year(cell_text)
+                    break
 
             row_values = []
             row_links = []
@@ -121,8 +127,8 @@ load_excel()
 
 
 def unique_items(items):
-    unique = []
     seen = set()
+    unique = []
 
     for item in items:
         key = (
@@ -148,20 +154,19 @@ def format_bucket_results(items):
     first = items[0]
     lines = []
 
-    # month header + month link only once on top
     if first.get("month_group"):
         lines.append(first["month_group"])
         if first.get("month_link"):
             lines.append(first["month_link"])
-        lines.append("")
+        lines.append("-" * 50)
 
     for item in items:
         lines.append(item["text"])
 
-        extra_links = []
-        for link in item.get("links", []):
-            if link != item.get("month_link"):
-                extra_links.append(link)
+        extra_links = [
+            link for link in item.get("links", [])
+            if link != item.get("month_link")
+        ]
 
         if extra_links:
             lines.extend(extra_links)
@@ -176,9 +181,8 @@ def format_top_results(items, limit=5):
         return "No relevant data found."
 
     output = []
-    count = 0
 
-    for item in items:
+    for count, item in enumerate(items):
         if count >= limit:
             break
 
@@ -191,29 +195,22 @@ def format_top_results(items, limit=5):
 
         block.append(item["text"])
 
-        extra_links = []
-        for link in item.get("links", []):
-            if link != item.get("month_link"):
-                extra_links.append(link)
+        extra_links = [
+            link for link in item.get("links", [])
+            if link != item.get("month_link")
+        ]
 
         if extra_links:
             block.extend(extra_links)
 
         output.append("\n".join(block))
-        count += 1
 
     return "\n\n".join(output)
 
 
 def score_keyword_match(text, keywords):
-    score = 0
-    text_lower = text.lower()
-
-    for word in keywords:
-        if word in text_lower:
-            score += 1
-
-    return score
+    text_words = set(re.findall(r"\b\w+\b", text.lower()))
+    return sum(1 for word in keywords if len(word) > 2 and word in text_words)
 
 
 def search_answer(question, selected_sheet):
@@ -228,13 +225,12 @@ def search_answer(question, selected_sheet):
     if not filtered:
         return f"No data found for sheet '{selected_sheet}'."
 
-    # CASE 1: month/year query => return whole bucket
+    # CASE 1: Month + Year → full bucket
     if query_month and query_year:
-        bucket_matches = []
-
-        for item in filtered:
-            if item.get("month") == query_month and item.get("year") == query_year:
-                bucket_matches.append(item)
+        bucket_matches = [
+            item for item in filtered
+            if item.get("month") == query_month and item.get("year") == query_year
+        ]
 
         bucket_matches = unique_items(bucket_matches)
 
@@ -243,8 +239,8 @@ def search_answer(question, selected_sheet):
 
         return f"No updates found for {query_month.title()} {query_year} in sheet '{selected_sheet}'."
 
-    # CASE 2: keyword search => top 5
-    query_words = [w.strip() for w in q.split() if w.strip()]
+    # CASE 2: Keyword search
+    query_words = [w for w in q.split() if w]
     scored = []
 
     for item in filtered:
@@ -254,8 +250,7 @@ def search_answer(question, selected_sheet):
 
     if scored:
         scored.sort(key=lambda x: x[0], reverse=True)
-        ranked_items = [item for _, item in scored]
-        ranked_items = unique_items(ranked_items)
+        ranked_items = unique_items([item for _, item in scored])
         return format_top_results(ranked_items, limit=5)
 
     return f"No relevant data found in sheet '{selected_sheet}'."
@@ -264,7 +259,6 @@ def search_answer(question, selected_sheet):
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json(silent=True) or {}
-
     question = str(data.get("question", "")).strip()
     selected_sheet = str(data.get("sheet", "")).strip()
 
