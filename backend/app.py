@@ -2,6 +2,7 @@ from pathlib import Path
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openpyxl import load_workbook
+from datetime import datetime, date
 import re
 
 app = Flask(__name__)
@@ -21,7 +22,7 @@ def normalize_month_and_year(text):
     if not text:
         return None, None
 
-    text = text.lower()
+    text = str(text).lower()
     text = text.replace(",", " ").replace("-", " ")
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -69,7 +70,7 @@ def looks_like_month_group(text):
 
 def load_excel():
     global knowledge
-    knowledge = []
+    knowledge.clear()
 
     wb = load_workbook(EXCEL_PATH, data_only=True)
 
@@ -81,9 +82,19 @@ def load_excel():
 
         for row in sheet.iter_rows():
 
-            # ✅ Detect month bucket (A or B, text or hyperlink)
+            # ✅ Month bucket detection (A or B, text, hyperlink, OR Excel date)
             for cell in row[:2]:
                 raw = cell.value
+
+                # ✅ Excel date / datetime
+                if isinstance(raw, (datetime, date)):
+                    cur_month = raw.strftime("%B").lower()
+                    cur_year = str(raw.year)
+                    cur_text = raw.strftime("%b-%y")
+                    cur_link = cell.hyperlink.target if cell.hyperlink else None
+                    break
+
+                # ✅ Hyperlink display text
                 if raw is None and cell.hyperlink:
                     raw = getattr(cell.hyperlink, "display", None)
 
@@ -159,7 +170,7 @@ def format_results(items, limit=5):
     return "\n".join(lines).strip()
 
 
-# ---------------- Search Logic (FINAL & SIMPLE) ----------------
+# ---------------- Search Logic (FINAL) ----------------
 
 def search_answer(question, selected_sheet):
     q = question.lower().strip()
@@ -173,29 +184,29 @@ def search_answer(question, selected_sheet):
     if not sheet_items:
         return f"No data found for sheet '{selected_sheet}'."
 
-    # ✅ 1. Month + Year → STRICT match (NO fallback)
+    # ✅ Month + year → STRICT
     if q_month and q_year:
-        results = [
+        matches = [
             i for i in sheet_items
             if i.get("month") == q_month and i.get("year") == q_year
         ]
-        results = unique_items(results)
+        matches = unique_items(matches)
 
-        if results:
-            return format_results(results)
+        if matches:
+            return format_results(matches)
 
         return f"No updates found for {q_month.title()} {q_year} in sheet '{selected_sheet}'."
 
-    # ✅ 2. Month only → LATEST year only
+    # ✅ Month only → Latest year
     if q_month and not q_year:
         month_items = [i for i in sheet_items if i.get("month") == q_month and i.get("year")]
-
         if month_items:
             latest_year = max(i["year"] for i in month_items)
-            latest_items = [i for i in month_items if i["year"] == latest_year]
-            return format_results(unique_items(latest_items))
+            return format_results(
+                unique_items([i for i in month_items if i["year"] == latest_year])
+            )
 
-    # ✅ 3. Keyword search
+    # ✅ Keyword search
     words = q.split()
     scored = []
 
@@ -236,3 +247,4 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+``
