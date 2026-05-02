@@ -18,13 +18,19 @@ def normalize_spaces(text):
 
 def normalize_month_and_year(text):
     """
-    Returns (month_name, year_4_digit) from strings like:
-    Jan 26, Jan-26, January 2026, July,2025, Oct-2024
+    Supports:
+    Jan 26
+    Jan-26
+    Jan,26
+    January 2026
+    March,2026
     """
     if not text:
         return None, None
 
     text = str(text).lower().strip()
+    text = text.replace(",", " ").replace("-", " ")
+    text = re.sub(r"\s+", " ", text)
 
     month_map = {
         "jan": "january",
@@ -53,43 +59,36 @@ def normalize_month_and_year(text):
         "december": "december",
     }
 
-    detected_month = None
-    for key, value in month_map.items():
-        if re.search(rf"\b{re.escape(key)}\b", text):
-            detected_month = value
-            break
+    parts = text.split()
 
+    detected_month = None
     detected_year = None
 
-    # 4-digit year first
-    m4 = re.search(r"\b(20\d{2})\b", text)
-    if m4:
-        detected_year = m4.group(1)
-    else:
-        # 2-digit year like 26 => 2026
-        m2 = re.search(r"\b(\d{2})\b", text)
-        if m2:
-            yy = int(m2.group(1))
-            detected_year = f"20{yy:02d}"
+    for part in parts:
+        if part in month_map:
+            detected_month = month_map[part]
+            break
+
+    for part in parts:
+        if re.fullmatch(r"20\d{2}", part):
+            detected_year = part
+            break
+        if re.fullmatch(r"\d{2}", part):
+            detected_year = f"20{part}"
+            break
 
     return detected_month, detected_year
 
 
 def looks_like_month_group(text):
-    """
-    Detect if a cell is a month/year group header in column A.
-    """
-    if not text:
-        return False
-
     month, year = normalize_month_and_year(text)
     return bool(month and year)
 
 
 def load_excel():
     """
-    Reads workbook and links Column A month/year group + month hyperlink
-    to subsequent B/C rows until next month group appears.
+    Reads workbook and links Column A month/year header + its hyperlink
+    to following B/C rows until next month/year header appears.
     """
     global knowledge
     knowledge = []
@@ -103,17 +102,20 @@ def load_excel():
         current_group_year = None
 
         for row in sheet.iter_rows():
+            # Column A handling
             col_a_text = ""
             col_a_link = None
 
             if len(row) >= 1:
                 a_cell = row[0]
+
                 if a_cell.value is not None:
                     col_a_text = normalize_spaces(a_cell.value)
+
                 if a_cell.hyperlink and a_cell.hyperlink.target:
                     col_a_link = a_cell.hyperlink.target
 
-            # If column A contains a month/year header, update current group
+            # Update current month/year group if column A has a month-year header
             if looks_like_month_group(col_a_text):
                 current_group_text = col_a_text
                 current_group_link = col_a_link
@@ -158,12 +160,13 @@ def unique_items(items):
         key = (
             item["sheet"]
             + "||"
-            + (item.get("month_group") or "")
+            + str(item.get("month_group") or "")
             + "||"
             + item["text"]
             + "||"
             + "||".join(item.get("links", []))
         )
+
         if key not in seen:
             seen.add(key)
             unique.append(item)
@@ -191,10 +194,10 @@ def format_results(items, limit=None):
             else:
                 block.append(item["month_group"])
 
-        # Main matched row
+        # Main row text
         block.append(item["text"])
 
-        # Extra row-level links except duplicate month link
+        # Row-level links except duplicate month link
         extra_links = []
         for link in item.get("links", []):
             if link != item.get("month_link"):
@@ -225,9 +228,8 @@ def search_answer(question, selected_sheet):
 
     query_month, query_year = normalize_month_and_year(q)
 
-    # Remove detected month/year tokens from keyword search
+    # Remove month/year tokens for keyword-only search
     cleaned_query = q
-
     month_words = [
         "jan", "january", "feb", "february", "mar", "march", "apr", "april",
         "may", "jun", "june", "jul", "july", "aug", "august", "sep", "sept",
@@ -239,6 +241,7 @@ def search_answer(question, selected_sheet):
 
     cleaned_query = re.sub(r"\b20\d{2}\b", " ", cleaned_query)
     cleaned_query = re.sub(r"\b\d{2}\b", " ", cleaned_query)
+    cleaned_query = re.sub(r"\s+", " ", cleaned_query).strip()
 
     keywords = [w.strip() for w in cleaned_query.split() if w.strip()]
 
@@ -250,7 +253,7 @@ def search_answer(question, selected_sheet):
     if not filtered:
         return f"No data found for sheet '{selected_sheet}'."
 
-    # CASE 1: exact month + year search => return ALL updates for that month group
+    # CASE 1: month + year query => return ALL updates from that month group
     if query_month and query_year:
         month_matches = []
 
@@ -260,13 +263,6 @@ def search_answer(question, selected_sheet):
 
             if item_month == query_month and item_year == query_year:
                 month_matches.append(item)
-                continue
-
-            # fallback if month/year somehow also appears in text
-            text_lower = item["text"].lower()
-            short_year = query_year[-2:]
-            if query_month in text_lower and (query_year in text_lower or re.search(rf"\b{re.escape(short_year)}\b", text_lower)):
-                month_matches.append(item)
 
         month_matches = unique_items(month_matches)
 
@@ -275,15 +271,11 @@ def search_answer(question, selected_sheet):
 
         return f"No updates found for {query_month.title()} {query_year} in sheet '{selected_sheet}'."
 
-    # CASE 2: keyword search => return top matches, at least 5 if available
+    # CASE 2: keyword search => top 5
     scored = []
 
     for item in filtered:
         score = score_keyword_match(item["text"], keywords)
-
-        # if no keywords left, fallback to generic whole query matching
-        if not keywords:
-            score = score_keyword_match(item["text"], q.split())
 
         if score > 0:
             scored.append((score, item))
@@ -294,7 +286,7 @@ def search_answer(question, selected_sheet):
         ranked_items = unique_items(ranked_items)
         return format_results(ranked_items, limit=5)
 
-    # CASE 3: generic fallback => top 5 based on all words
+    # CASE 3: generic fallback => top 5
     fallback = []
     query_words = [w.strip() for w in q.split() if w.strip()]
 
