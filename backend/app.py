@@ -11,6 +11,12 @@ CORS(app)
 EXCEL_PATH = Path(__file__).resolve().parent.parent / "methodology.xlsx"
 knowledge = []
 
+MONTH_ORDER = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12
+}
+
 # ---------------- Helpers ----------------
 
 def normalize_spaces(text):
@@ -21,8 +27,7 @@ def normalize_month_and_year(text):
     if not text:
         return None, None
 
-    text = str(text).lower()
-    text = text.replace(",", " ").replace("-", " ")
+    text = str(text).lower().replace(",", " ").replace("-", " ")
     text = re.sub(r"\s+", " ", text).strip()
 
     months = {
@@ -40,44 +45,29 @@ def normalize_month_and_year(text):
         "dec": "december", "december": "december",
     }
 
-    parts = text.split()
     month = year = None
-
-    for p in parts:
+    for p in text.split():
         if p in months:
             month = months[p]
-            break
-
-    for p in parts:
         if re.fullmatch(r"20\d{2}", p):
             year = p
-            break
-        if re.fullmatch(r"\d{2}", p):
+        elif re.fullmatch(r"\d{2}", p):
             year = f"20{p}"
-            break
 
     return month, year
-
-
-def looks_like_month_group(text):
-    m, y = normalize_month_and_year(text)
-    return bool(m and y)
 
 
 # ---------------- Load Excel ----------------
 
 def load_excel():
-    global knowledge
     knowledge.clear()
-
     wb = load_workbook(EXCEL_PATH, data_only=True)
 
     for sheet in wb.worksheets:
         cur_text = cur_link = cur_month = cur_year = None
 
         for row in sheet.iter_rows():
-
-            # ✅ Month detection: Text / Hyperlink / Excel Date (A or B)
+            # month bucket (A or B)
             for cell in row[:2]:
                 raw = cell.value
 
@@ -91,113 +81,102 @@ def load_excel():
                 if raw is None and cell.hyperlink:
                     raw = getattr(cell.hyperlink, "display", None)
 
-                if not raw:
-                    continue
-
-                txt = normalize_spaces(raw)
-                if looks_like_month_group(txt):
-                    cur_text = txt
-                    cur_link = cell.hyperlink.target if cell.hyperlink else None
-                    cur_month, cur_year = normalize_month_and_year(txt)
-                    break
+                if raw:
+                    m, y = normalize_month_and_year(raw)
+                    if m and y:
+                        cur_month, cur_year = m, y
+                        cur_text = normalize_spaces(raw)
+                        cur_link = cell.hyperlink.target if cell.hyperlink else None
+                        break
 
             texts, links = [], []
-
             for cell in row:
                 if cell.value:
                     texts.append(normalize_spaces(cell.value))
                 if cell.hyperlink and cell.hyperlink.target:
                     links.append(cell.hyperlink.target)
 
-            if not texts:
-                continue
-
-            knowledge.append({
-                "sheet": sheet.title,
-                "text": " | ".join(texts),
-                "links": links,
-                "month_group": cur_text,
-                "month_link": cur_link,
-                "month": cur_month,
-                "year": cur_year,
-            })
+            if texts:
+                knowledge.append({
+                    "sheet": sheet.title,
+                    "text": " | ".join(texts),
+                    "links": links,
+                    "month_group": cur_text,
+                    "month_link": cur_link,
+                    "month": cur_month,
+                    "year": cur_year,
+                })
 
 
 load_excel()
 
-
-# ---------------- Formatting (OPTION‑2 ENABLED) ----------------
+# ---------------- Formatting ----------------
 
 def format_results(items):
-    if not items:
-        return "No relevant data found."
-
-    output = []
-    seen_months = set()
-
+    output, seen = [], set()
     for item in items:
-        month_key = (item.get("month_group"), item.get("month_link"))
-
-        if item.get("month_group") and month_key not in seen_months:
-            seen_months.add(month_key)
+        key = (item["month"], item["year"])
+        if key not in seen:
+            seen.add(key)
             output.append(item["month_group"])
-            if item.get("month_link"):
+            if item["month_link"]:
                 output.append(item["month_link"])
             output.append("-" * 40)
 
-        if item.get("text"):
+        if item["text"]:
             output.append(item["text"])
-
-        for l in item.get("links", []):
-            if l != item.get("month_link"):
-                output.append(l)
-
-        output.append("")
+            for l in item["links"]:
+                if l != item["month_link"]:
+                    output.append(l)
+            output.append("")
 
     return "\n".join(output).strip()
 
 
-# ---------------- Search Logic (Final Option‑2) ----------------
+# ---------------- Search Logic (FIXED) ----------------
 
 def search_answer(question, selected_sheet):
     q = question.lower().strip()
-    q_month, q_year = normalize_month_and_year(q)
-
     sheet_items = [i for i in knowledge if i["sheet"].lower() == selected_sheet.lower()]
-    if not sheet_items:
-        return f"No data found for sheet '{selected_sheet}'."
 
-    # ✅ Keyword search
-    words = q.split()
+    words = [w for w in q.split() if len(w) > 2]
     matches = []
 
+    # ✅ keyword exact matches only
     for item in sheet_items:
-        score = sum(1 for w in words if len(w) > 2 and w in item["text"].lower())
-        if score:
+        if any(w in item["text"].lower() for w in words):
             matches.append(item)
 
     if not matches:
         return f"No relevant data found in sheet '{selected_sheet}'."
 
-    # ✅ OPTION‑2: also include EMPTY month buckets (for link display)
-    months_in_results = {(i["month"], i["year"]) for i in matches if i["month"] and i["year"]}
-    extra_months = []
+    # ✅ get matched month buckets only
+    unique_months = {}
+    for i in matches:
+        k = (i["year"], MONTH_ORDER.get(i["month"]))
+        unique_months[k] = i
 
-    for item in sheet_items:
-        key = (item.get("month"), item.get("year"))
-        if key and key not in months_in_results:
-            extra_months.append({
-                "sheet": item["sheet"],
+    sorted_months = sorted(unique_months.keys())
+    last_year, last_month_ord = sorted_months[-1]
+
+    # ✅ include ONLY next month (Option‑2, fixed)
+    next_month = last_month_ord + 1
+    extra = None
+    for i in sheet_items:
+        if i["year"] == last_year and MONTH_ORDER.get(i["month"]) == next_month:
+            extra = {
+                "sheet": i["sheet"],
                 "text": "",
                 "links": [],
-                "month_group": item["month_group"],
-                "month_link": item["month_link"],
-                "month": item["month"],
-                "year": item["year"],
-            })
-            months_in_results.add(key)
+                "month_group": i["month_group"],
+                "month_link": i["month_link"],
+                "month": i["month"],
+                "year": i["year"],
+            }
+            break
 
-    return format_results(matches + extra_months)
+    final_items = matches + ([extra] if extra else [])
+    return format_results(final_items)
 
 
 # ---------------- API ----------------
@@ -205,8 +184,8 @@ def search_answer(question, selected_sheet):
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json(silent=True) or {}
-    q = str(data.get("question", "")).strip()
-    sheet = str(data.get("sheet", "")).strip()
+    q = data.get("question", "").strip()
+    sheet = data.get("sheet", "").strip()
 
     if not q:
         return jsonify({"answer": "Please enter a question."})
