@@ -11,7 +11,7 @@ EXCEL_PATH = Path(__file__).resolve().parent.parent / "methodology.xlsx"
 knowledge = []
 
 
-# ---------- Helpers ----------
+# ---------------- Helpers ----------------
 
 def normalize_spaces(text):
     return re.sub(r"\s+", " ", str(text).strip())
@@ -21,11 +21,11 @@ def normalize_month_and_year(text):
     if not text:
         return None, None
 
-    text = str(text).lower()
+    text = text.lower()
     text = text.replace(",", " ").replace("-", " ")
     text = re.sub(r"\s+", " ", text).strip()
 
-    month_map = {
+    months = {
         "jan": "january", "january": "january",
         "feb": "february", "february": "february",
         "mar": "march", "march": "march",
@@ -45,8 +45,8 @@ def normalize_month_and_year(text):
     year = None
 
     for p in parts:
-        if p in month_map:
-            month = month_map[p]
+        if p in months:
+            month = months[p]
             break
 
     for p in parts:
@@ -65,7 +65,7 @@ def looks_like_month_group(text):
     return bool(m and y)
 
 
-# ---------- Load Excel ----------
+# ---------------- Load Excel ----------------
 
 def load_excel():
     global knowledge
@@ -74,14 +74,14 @@ def load_excel():
     wb = load_workbook(EXCEL_PATH, data_only=True)
 
     for sheet in wb.worksheets:
-        current_group_text = None
-        current_group_link = None
-        current_group_month = None
-        current_group_year = None
+        cur_text = None
+        cur_link = None
+        cur_month = None
+        cur_year = None
 
         for row in sheet.iter_rows():
 
-            # ✅ Month bucket detection (Column A or B, text or hyperlink)
+            # ✅ Detect month bucket (A or B, text or hyperlink)
             for cell in row[:2]:
                 raw = cell.value
                 if raw is None and cell.hyperlink:
@@ -90,63 +90,59 @@ def load_excel():
                 if not raw:
                     continue
 
-                text = normalize_spaces(raw)
-                if looks_like_month_group(text):
-                    current_group_text = text
-                    current_group_link = (
-                        cell.hyperlink.target
-                        if cell.hyperlink and cell.hyperlink.target
-                        else None
-                    )
-                    current_group_month, current_group_year = normalize_month_and_year(text)
+                txt = normalize_spaces(raw)
+                if looks_like_month_group(txt):
+                    cur_text = txt
+                    cur_link = cell.hyperlink.target if cell.hyperlink else None
+                    cur_month, cur_year = normalize_month_and_year(txt)
                     break
 
-            row_texts = []
+            row_text = []
             row_links = []
 
             for cell in row:
                 if cell.value:
-                    row_texts.append(normalize_spaces(cell.value))
+                    row_text.append(normalize_spaces(cell.value))
                 if cell.hyperlink and cell.hyperlink.target:
                     row_links.append(cell.hyperlink.target)
 
-            if not row_texts:
+            if not row_text:
                 continue
 
             knowledge.append({
                 "sheet": sheet.title,
-                "text": " | ".join(row_texts),
+                "text": " | ".join(row_text),
                 "links": row_links,
-                "month_group": current_group_text,
-                "month_link": current_group_link,
-                "month": current_group_month,
-                "year": current_group_year,
+                "month_group": cur_text,
+                "month_link": cur_link,
+                "month": cur_month,
+                "year": cur_year,
             })
 
 
 load_excel()
 
 
-# ---------- Formatting ----------
+# ---------------- Formatting ----------------
 
 def unique_items(items):
     seen = set()
-    result = []
+    out = []
     for i in items:
-        key = i["sheet"] + "||" + (i.get("month_group") or "") + "||" + i["text"]
+        key = i["sheet"] + "||" + (i["month_group"] or "") + "||" + i["text"]
         if key not in seen:
             seen.add(key)
-            result.append(i)
-    return result
+            out.append(i)
+    return out
 
 
 def format_results(items, limit=5):
     if not items:
         return "No relevant data found."
 
+    first = items[0]
     lines = []
 
-    first = items[0]
     if first.get("month_group"):
         lines.append(first["month_group"])
         if first.get("month_link"):
@@ -163,7 +159,7 @@ def format_results(items, limit=5):
     return "\n".join(lines).strip()
 
 
-# ---------- Search Logic (SIMPLIFIED) ----------
+# ---------------- Search Logic (FINAL & SIMPLE) ----------------
 
 def search_answer(question, selected_sheet):
     q = question.lower().strip()
@@ -177,23 +173,35 @@ def search_answer(question, selected_sheet):
     if not sheet_items:
         return f"No data found for sheet '{selected_sheet}'."
 
-    # ✅ 1. Try month bucket (if user typed month/year)
+    # ✅ 1. Month + Year → STRICT match (NO fallback)
     if q_month and q_year:
-        bucket = [
+        results = [
             i for i in sheet_items
-            if i["month"] == q_month and i["year"] == q_year
+            if i.get("month") == q_month and i.get("year") == q_year
         ]
-        bucket = unique_items(bucket)
-        if bucket:
-            return format_results(bucket)
+        results = unique_items(results)
 
-    # ✅ 2. Always fallback to keyword search
+        if results:
+            return format_results(results)
+
+        return f"No updates found for {q_month.title()} {q_year} in sheet '{selected_sheet}'."
+
+    # ✅ 2. Month only → LATEST year only
+    if q_month and not q_year:
+        month_items = [i for i in sheet_items if i.get("month") == q_month and i.get("year")]
+
+        if month_items:
+            latest_year = max(i["year"] for i in month_items)
+            latest_items = [i for i in month_items if i["year"] == latest_year]
+            return format_results(unique_items(latest_items))
+
+    # ✅ 3. Keyword search
     words = q.split()
     scored = []
 
     for item in sheet_items:
         score = sum(1 for w in words if len(w) > 2 and w in item["text"].lower())
-        if score > 0:
+        if score:
             scored.append((score, item))
 
     if scored:
@@ -203,7 +211,7 @@ def search_answer(question, selected_sheet):
     return f"No relevant data found in sheet '{selected_sheet}'."
 
 
-# ---------- API ----------
+# ---------------- API ----------------
 
 @app.route("/chat", methods=["POST"])
 def chat():
