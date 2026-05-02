@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Excel Chatbot",
+  "version": "1.0",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "permissions": [],
+  "host_permissions": [
+    "http://127.0.0.1:5000/*"
+  ]
+}
