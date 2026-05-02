@@ -1,7 +1,7 @@
-import pandas as pd
+from pathlib import Path
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from pathlib import Path
+from openpyxl import load_workbook
 
 app = Flask(__name__)
 CORS(app)
@@ -10,40 +10,66 @@ EXCEL_PATH = Path(__file__).resolve().parent.parent / "methodology.xlsx"
 
 knowledge = []
 
+
 def load_excel():
     global knowledge
     knowledge = []
 
-    xls = pd.ExcelFile(EXCEL_PATH)
+    wb = load_workbook(EXCEL_PATH, data_only=True)
 
-    for sheet in xls.sheet_names:
-        df = xls.parse(sheet)
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            text_parts = []
+            links = []
 
-        for _, row in df.iterrows():
-            text = " | ".join([str(v) for v in row if pd.notna(v)])
-            if text.strip():
-                knowledge.append(text.lower())
+            for cell in row:
+                if cell.value:
+                    text_parts.append(str(cell.value))
+
+                # 👇 THIS extracts hyperlink
+                if cell.hyperlink:
+                    links.append(cell.hyperlink.target)
+
+            if text_parts or links:
+                knowledge.append({
+                    "text": " | ".join(text_parts),
+                    "links": links
+                })
+
 
 load_excel()
+
 
 def search_answer(question):
     q = question.lower()
     results = []
 
-    for row in knowledge:
-        score = sum(1 for word in q.split() if word in row)
-        if score > 0:
-            results.append((score, row))
+    for item in knowledge:
+        searchable = item["text"].lower()
+        score = sum(1 for word in q.split() if word in searchable)
 
-    results.sort(reverse=True)
+        if score > 0:
+            results.append((score, item))
+
+    results.sort(key=lambda x: x[0], reverse=True)
 
     if not results:
-        return "No relevant data found in the Excel file."
+        return "No relevant data found."
 
     top = results[:3]
-    answer = "\n\n".join([r[1] for r in top])
+    output = []
 
-    return answer
+    for score, item in top:
+        line = item["text"]
+
+        # 👇 Append links
+        if item["links"]:
+            for link in item["links"]:
+                line += f"\n{link}"
+
+        output.append(line)
+
+    return "\n\n".join(output)
 
 
 @app.route("/chat", methods=["POST"])
