@@ -20,6 +20,7 @@ def load_excel():
 
     for sheet in wb.worksheets:
         current_month_year = None
+        current_month_link = None
 
         for row in sheet.iter_rows():
             row_values = []
@@ -33,10 +34,12 @@ def load_excel():
                     if text:
                         row_values.append(text)
 
+                        # first column month-year group capture
                         if idx == 0:
                             month_year_pattern = r"(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)[,\s-]*20\d{2}"
                             if re.search(month_year_pattern, text.lower()):
                                 current_month_year = text
+                                current_month_link = cell.hyperlink.target if cell.hyperlink and cell.hyperlink.target else None
 
                 if cell.hyperlink and cell.hyperlink.target:
                     row_links.append(cell.hyperlink.target)
@@ -48,7 +51,9 @@ def load_excel():
                     "sheet": sheet.title,
                     "text": joined_text,
                     "links": row_links,
-                    "group": current_month_year.lower() if current_month_year else ""
+                    "group": current_month_year.lower() if current_month_year else "",
+                    "month": current_month_year,
+                    "month_link": current_month_link
                 })
 
 
@@ -97,6 +102,27 @@ def normalize_month_query(text):
     return detected_month, detected_year, month_map
 
 
+def unique_items_only(items):
+    unique = []
+    seen = set()
+
+    for item in items:
+        key = (
+            item["sheet"]
+            + "||"
+            + item["text"]
+            + "||"
+            + (item.get("month") or "")
+            + "||"
+            + "||".join(item.get("links", []))
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    return unique
+
+
 def format_results(items, limit=None):
     if not items:
         return "No relevant data found."
@@ -108,29 +134,31 @@ def format_results(items, limit=None):
         if limit is not None and count >= limit:
             break
 
-        line = item["text"]
+        parts = []
 
-        if item.get("links"):
-            for link in item["links"]:
-                line += f"\n{link}"
+        # Month-Year should come FIRST / UPPER
+        if item.get("month"):
+            if item.get("month_link"):
+                parts.append(f"{item['month']}\n{item['month_link']}")
+            else:
+                parts.append(item["month"])
 
-        output.append(line)
+        # Then matched row text
+        parts.append(item["text"])
+
+        # Then any row-level links except duplicated month link
+        extra_links = []
+        for link in item.get("links", []):
+            if link != item.get("month_link"):
+                extra_links.append(link)
+
+        if extra_links:
+            parts.extend(extra_links)
+
+        output.append("\n".join(parts))
         count += 1
 
     return "\n\n".join(output)
-
-
-def unique_items_only(items):
-    unique = []
-    seen = set()
-
-    for item in items:
-        key = item["text"] + "||" + "||".join(item.get("links", []))
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
-
-    return unique
 
 
 def search_answer(question, selected_sheet):
@@ -160,7 +188,7 @@ def search_answer(question, selected_sheet):
         text_lower = item["text"].lower()
         group_lower = item.get("group", "").lower()
 
-        # Mode 1: month + year exact match
+        # exact month-year query -> all rows from that group
         if month and year:
             if month in group_lower and year in group_lower:
                 month_year_matches.append(item)
@@ -170,7 +198,7 @@ def search_answer(question, selected_sheet):
                 month_year_matches.append(item)
                 continue
 
-        # Mode 2: specific keyword search
+        # keyword search
         keyword_score = 0
         for word in keywords:
             if word in text_lower:
@@ -180,7 +208,7 @@ def search_answer(question, selected_sheet):
             keyword_matches.append((keyword_score, item))
             continue
 
-        # Mode 3: generic fallback
+        # generic fallback
         fallback_score = 0
         for word in q.split():
             if word in text_lower:
@@ -190,8 +218,8 @@ def search_answer(question, selected_sheet):
             fallback_matches.append((fallback_score, item))
 
     if month and year and month_year_matches:
-        month_year_matches = unique_items_only(month_year_matches)
-        return format_results(month_year_matches, limit=None)
+        items = unique_items_only(month_year_matches)
+        return format_results(items, limit=None)
 
     if keyword_matches:
         keyword_matches.sort(key=lambda x: x[0], reverse=True)
